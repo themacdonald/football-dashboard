@@ -1,151 +1,256 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import math
 from pathlib import Path
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
 
-# Set the title and favicon that appear in the Browser's tab bar.
+# -----------------------------------------------------------------------------
+# Page config
+
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+    page_title='Injury Risk Dashboard',
+    page_icon=':soccer:'
 )
 
 # -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Load data
 
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def get_data():
+    DATA_FILENAME = Path(__file__).parent / 'data' / 'data.csv'
+    df = pd.read_csv(DATA_FILENAME)
+    return df
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+df = get_data()
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+target = 'Injury_Next_Season'
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
+features = [
+    'Previous_Injury_Count',
+    'Training_Hours_Per_Week',
+    'Sleep_Hours_Per_Night',
+    'Stress_Level_Score',
+    'BMI',
+    'Warmup_Routine_Adherence',
+    'Reaction_Time_ms',
+    'Balance_Test_Score',
+    'Agility_Score'
 ]
 
-st.header('GDP over time', divider='gray')
+# -----------------------------------------------------------------------------
+# Train model
+
+@st.cache_resource
+def train_model(df):
+    df_model = df[features + [target]].dropna()
+
+    X = df_model[features]
+    y = df_model[target]
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    model = LogisticRegression()
+    model.fit(X_scaled, y)
+
+    return model, scaler
+
+model, scaler = train_model(df)
+
+# -----------------------------------------------------------------------------
+# Title
+
+'''
+# Injury Risk Dashboard
+
+Explore injury risk patterns, simulate player profiles, and track how risk evolves over time.
+'''
 
 ''
+''
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
+# -----------------------------------------------------------------------------
+# Filters
+
+positions = df['Position'].unique()
+
+selected_positions = st.multiselect(
+    'Select positions',
+    positions,
+    default=positions
+)
+
+filtered_df = df[df['Position'].isin(selected_positions)]
+
+''
+''
+
+# -----------------------------------------------------------------------------
+# Overview metrics
+
+st.header('Overview', divider='gray')
+
+col1, col2, col3 = st.columns(3)
+
+col1.metric(
+    'Players',
+    len(filtered_df)
+)
+
+col2.metric(
+    'Avg Injury Rate',
+    f"{filtered_df[target].mean():.2%}"
+)
+
+col3.metric(
+    'Avg Training Hours',
+    f"{filtered_df['Training_Hours_Per_Week'].mean():.1f}"
 )
 
 ''
 ''
 
+# -----------------------------------------------------------------------------
+# Injury by position
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+st.subheader('Injury Rate by Position')
 
-st.header(f'GDP in {to_year}', divider='gray')
+pivot_pos = filtered_df.groupby('Position')[target].mean()
+
+st.bar_chart(pivot_pos)
 
 ''
+''
 
-cols = st.columns(4)
+# -----------------------------------------------------------------------------
+# Previous injury impact
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+st.subheader('Previous Injury vs Risk')
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+pivot_prev = filtered_df.groupby('Previous_Injury_Count')[target].mean()
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+st.line_chart(pivot_prev)
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+''
+''
+
+# -----------------------------------------------------------------------------
+# Player selection
+
+st.header('Player Risk Scoring', divider='gray')
+
+mode = st.radio(
+    'Choose mode',
+    ['Select Player', 'Simulate Player']
+)
+
+if mode == 'Select Player':
+    player_index = st.selectbox('Select player', filtered_df.index)
+    player = filtered_df.loc[player_index]
+
+    input_data = player[features].values.reshape(1, -1)
+
+else:
+    inputs = {}
+
+    for f in features:
+        inputs[f] = st.slider(
+            f,
+            float(df[f].min()),
+            float(df[f].max()),
+            float(df[f].median())
         )
+
+    input_data = np.array(list(inputs.values())).reshape(1, -1)
+
+''
+''
+
+# -----------------------------------------------------------------------------
+# Prediction
+
+prob = model.predict_proba(scaler.transform(input_data))[0][1]
+
+st.metric(
+    label='Injury Risk',
+    value=f"{prob:.2%}"
+)
+
+if prob > 0.75:
+    st.error('High Risk')
+elif prob > 0.5:
+    st.warning('Moderate Risk')
+else:
+    st.success('Low Risk')
+
+''
+''
+
+# -----------------------------------------------------------------------------
+# Time simulation
+
+st.header('Risk Over Time', divider='gray')
+
+weeks = st.slider(
+    'Weeks',
+    min_value=1,
+    max_value=12,
+    value=6
+)
+
+sim = input_data.copy()
+trend = []
+
+for _ in range(weeks):
+    sim[0][features.index('Training_Hours_Per_Week')] *= 1.02
+    sim[0][features.index('Stress_Level_Score')] *= 1.01
+    sim[0][features.index('Sleep_Hours_Per_Night')] *= 0.995
+
+    p = model.predict_proba(scaler.transform(sim))[0][1]
+    trend.append(p)
+
+trend_df = pd.DataFrame({
+    'Week': list(range(1, weeks + 1)),
+    'Risk': trend
+})
+
+st.line_chart(trend_df, x='Week', y='Risk')
+
+''
+''
+
+# -----------------------------------------------------------------------------
+# Recommendations
+
+st.header('Recommendations', divider='gray')
+
+training = input_data[0][features.index('Training_Hours_Per_Week')]
+sleep = input_data[0][features.index('Sleep_Hours_Per_Night')]
+stress = input_data[0][features.index('Stress_Level_Score')]
+injuries = input_data[0][features.index('Previous_Injury_Count')]
+warmup = input_data[0][features.index('Warmup_Routine_Adherence')]
+
+recs = []
+
+if training > df['Training_Hours_Per_Week'].quantile(0.75):
+    recs.append('Reduce training load by approximately 15 percent')
+
+if sleep < df['Sleep_Hours_Per_Night'].quantile(0.4):
+    recs.append('Increase sleep by 1 to 2 hours per night')
+
+if stress > df['Stress_Level_Score'].quantile(0.7):
+    recs.append('Reduce stress and introduce recovery sessions')
+
+if injuries >= 2:
+    recs.append('High injury recurrence risk, monitor closely')
+
+if warmup == 0:
+    recs.append('Introduce structured warmup routine')
+
+if recs:
+    for r in recs:
+        st.warning(r)
+else:
+    st.success('No major adjustments needed')
